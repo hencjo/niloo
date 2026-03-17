@@ -23,11 +23,8 @@ The name stands for:
 - optional `--sub` to preselect one mock user
 - `client_credentials` mode for fetching remote access tokens and printing them to stdout
 
-Run with Nix:
-
 ```bash
-nix build .#niloo
-nix run .#niloo -- --help
+nix run
 ```
 
 ## Quick Start
@@ -35,7 +32,7 @@ nix run .#niloo -- --help
 Generate a starter config:
 
 ```bash
-cargo run -- example-config > config.yaml
+niloo example-config > config.yaml
 ```
 
 ```bash
@@ -79,12 +76,4 @@ Notes:
 - `givenName` and `defaultName` are emitted in the ID token.
 - Each key under `claims` becomes a claim in issued JWTs.
 - For local `client_credentials`, the Basic auth `client_id` must match one of the configured sub keys.
-
-## Commands
-
-Top-level help:
-
-```bash
-niloo --help
-```
 
