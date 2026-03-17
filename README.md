@@ -77,3 +77,6 @@ Notes:
 - Each key under `claims` becomes a claim in issued JWTs.
 - For local `client_credentials`, the Basic auth `client_id` must match one of the configured sub keys.
 
+## License
+
+Apache-2.0. See [`LICENSE`](./LICENSE).
