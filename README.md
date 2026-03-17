@@ -36,7 +36,8 @@ niloo example-config > config.yaml
 ```
 
 ```bash
-niloo serve --port 9799 --config-file config.yaml
+CLIENT_ID=client_id CLIENT_SECRET=client_secret \
+  niloo serve --port 9799 --config-file config.yaml
 ```
 
 Fetch a local `client_credentials` token from the running server:
