@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use clap::{Args, Parser, Subcommand};
 
 const ROOT_ABOUT: &str =
@@ -15,12 +13,11 @@ Precedence:
   --port overrides PORT.
   --config-file is required and CLI-only.
   --sub is optional and CLI-only.
-  --key-file is optional and CLI-only.
 
 Behavior:
   --sub selects one configured user automatically for the browser authorization flow.
   Without --sub, the browser flow shows a user chooser page.
-  Without --key-file, a temporary PEM file is created outside the project directory.
+  A temporary PEM file is created outside the project directory for each run.
   Any configured client_id may use any flow.
 
 Config file example:
@@ -89,21 +86,12 @@ pub enum Commands {
 }
 
 #[derive(Debug, Clone, Args)]
-pub struct KeyArgs {
-    #[arg(long)]
-    pub key_file: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Args)]
 pub struct ServeArgs {
-    #[command(flatten)]
-    pub keys: KeyArgs,
-
     #[arg(long, env = "PORT")]
     pub port: u16,
 
     #[arg(long)]
-    pub config_file: PathBuf,
+    pub config_file: std::path::PathBuf,
 
     #[arg(long)]
     pub sub: Option<String>,

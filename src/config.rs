@@ -71,10 +71,7 @@ impl ResolvedConfig {
             issuer,
             issuer_path,
             scopes_supported: supported_scopes(&authorization_code_users, &parsed.clients),
-            key_file: args
-                .keys
-                .key_file
-                .unwrap_or_else(default_ephemeral_key_file),
+            key_file: default_ephemeral_key_file(),
             selected_sub,
             default_authorization_code_user,
             authorization_code_users,

@@ -129,7 +129,7 @@ mod tests {
 
     use super::fetch_client_credentials_token;
     use crate::app::AppState;
-    use crate::cli::{ClientCredentialsArgs, KeyArgs, ServeArgs};
+    use crate::cli::{ClientCredentialsArgs, ServeArgs};
     use crate::config::ResolvedConfig;
     use crate::keys::load_or_create;
     use crate::server;
@@ -173,15 +173,10 @@ authorization_code:
 "#;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let temp =
-            std::env::temp_dir().join(format!("niloo-remote-test-{}.pem", uuid::Uuid::new_v4()));
         let config_file =
             std::env::temp_dir().join(format!("niloo-remote-config-{}.yaml", uuid::Uuid::new_v4()));
         std::fs::write(&config_file, yaml).unwrap();
         let args = ServeArgs {
-            keys: KeyArgs {
-                key_file: Some(temp),
-            },
             port: addr.port(),
             config_file,
             sub: Some("sub1".to_string()),

@@ -403,7 +403,7 @@ mod tests {
     use tower::util::ServiceExt;
 
     use crate::app::AppState;
-    use crate::cli::{KeyArgs, ServeArgs};
+    use crate::cli::ServeArgs;
     use crate::config::ResolvedConfig;
     use crate::keys::load_or_create;
 
@@ -434,14 +434,10 @@ authorization_code:
         groups:
           - auditor
 "#;
-        let temp = std::env::temp_dir().join(format!("niloo-test-{}.pem", uuid::Uuid::new_v4()));
         let config_file =
             std::env::temp_dir().join(format!("niloo-config-{}.yaml", uuid::Uuid::new_v4()));
         std::fs::write(&config_file, yaml).unwrap();
         let args = ServeArgs {
-            keys: KeyArgs {
-                key_file: Some(temp),
-            },
             port: 9393,
             config_file,
             sub: selected_sub.map(ToOwned::to_owned),
