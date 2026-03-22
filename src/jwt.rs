@@ -47,6 +47,7 @@ pub fn mint_token_bundle(
     signing_key: &SigningKeyMaterial,
     config: &ResolvedConfig,
     user: &UserProfile,
+    client_id: &str,
     nonce: Option<&str>,
 ) -> Result<TokenBundle> {
     let access_token = format!("at-{}", random_token());
@@ -78,7 +79,7 @@ pub fn mint_token_bundle(
     let claims = Claims {
         nonce: nonce.map(ToOwned::to_owned),
         iss: config.issuer.clone(),
-        aud: config.client_id.clone(),
+        aud: client_id.to_string(),
         iat,
         exp,
         at_hash: token_hash(&access_token),

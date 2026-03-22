@@ -7,7 +7,6 @@ use serde::Deserialize;
 use crate::cli::ServeArgs;
 use crate::error::{AppError, Result};
 
-const CLIENT_ID: &str = "client_id";
 const CLIENT_SECRET: &str = "client_secret";
 const KEY_ID: &str = "kid-local-rsa-1";
 const TOKEN_TTL_SECONDS: i64 = 3600;
@@ -22,17 +21,24 @@ pub struct UserProfile {
 }
 
 #[derive(Debug, Clone)]
+pub struct Client {
+    pub client_id: String,
+    pub client_secret: String,
+    pub profile: UserProfile,
+    pub explicit_client_credentials_profile: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct ResolvedConfig {
     pub listen: SocketAddr,
     pub issuer: String,
     pub issuer_path: String,
-    pub client_id: String,
-    pub client_secret: String,
     pub scopes_supported: Vec<String>,
     pub key_file: PathBuf,
     pub selected_sub: Option<String>,
-    pub default_user: UserProfile,
-    pub users: BTreeMap<String, UserProfile>,
+    pub default_authorization_code_user: UserProfile,
+    pub authorization_code_users: BTreeMap<String, UserProfile>,
+    pub clients: BTreeMap<String, Client>,
     pub token_ttl_seconds: i64,
     pub code_ttl_seconds: i64,
 }
@@ -41,32 +47,38 @@ impl ResolvedConfig {
     pub fn from_serve_args(args: ServeArgs) -> Result<Self> {
         let issuer = default_issuer(args.port);
         let issuer_path = issuer_path(&issuer)?;
-        let users = load_users_from_file(&args.config_file)?;
+        let parsed = load_config_file(&args.config_file)?;
+        let authorization_code_users = parsed.authorization_code_users;
         let selected_sub = args.sub.clone();
-        let default_user =
-            match selected_sub.as_deref() {
-                Some(sub) => users.get(sub).cloned().ok_or_else(|| {
-                    AppError::bad_request(format!("unknown configured sub: {sub}"))
+        let default_authorization_code_user = match selected_sub.as_deref() {
+            Some(sub) => authorization_code_users
+                .get(sub)
+                .cloned()
+                .ok_or_else(|| AppError::bad_request(format!("unknown configured sub: {sub}")))?,
+            None => authorization_code_users
+                .values()
+                .next()
+                .cloned()
+                .ok_or_else(|| {
+                    AppError::bad_request(
+                        "config file must define at least one authorization_code sub",
+                    )
                 })?,
-                None => users.values().next().cloned().ok_or_else(|| {
-                    AppError::bad_request("config file must define at least one sub")
-                })?,
-            };
+        };
 
         Ok(Self {
             listen: SocketAddr::from(([127, 0, 0, 1], args.port)),
             issuer,
             issuer_path,
-            client_id: CLIENT_ID.to_string(),
-            client_secret: CLIENT_SECRET.to_string(),
-            scopes_supported: supported_scopes(&users),
+            scopes_supported: supported_scopes(&authorization_code_users, &parsed.clients),
             key_file: args
                 .keys
                 .key_file
                 .unwrap_or_else(default_ephemeral_key_file),
             selected_sub,
-            default_user,
-            users,
+            default_authorization_code_user,
+            authorization_code_users,
+            clients: parsed.clients,
             token_ttl_seconds: TOKEN_TTL_SECONDS,
             code_ttl_seconds: CODE_TTL_SECONDS,
         })
@@ -84,10 +96,11 @@ impl ResolvedConfig {
         format!("{}{}", self.issuer, "/jwks.json")
     }
 
-    pub fn example_client_credentials_client_id(&self) -> Option<&str> {
-        self.selected_sub
-            .as_deref()
-            .or_else(|| self.users.keys().next().map(String::as_str))
+    pub fn example_client_credentials_client(&self) -> Option<&Client> {
+        self.clients
+            .values()
+            .find(|client| client.explicit_client_credentials_profile)
+            .or_else(|| self.clients.values().next())
     }
 }
 
@@ -101,22 +114,35 @@ pub fn example_config_yaml() -> &'static str {
 #   niloo serve --port 9799 --config-file config.yaml
 #
 # Structure:
-#   subs maps each selectable subject id to display names and extra token claims.
+#   clients maps OAuth client ids to their client_secret and optional client_credentials claims.
+#   All entries under clients are clients, and any client_id may use any flow.
+#   authorization_code.subs defines the selectable users for the browser flow.
 #   Each key under claims becomes a claim in the issued JWT.
 #
-subs:
-  sub1:
-    givenName: Mock
-    defaultName: Mock User
+clients:
+  relying-party:
+    client_secret: client_secret
+  system-api:
+    client_secret: client_secret
+    givenName: System
+    defaultName: System API
     claims:
       groups:
         - admin
-  sub2:
-    givenName: Admin
-    defaultName: Admin User
-    claims:
-      groups:
-        - auditor
+authorization_code:
+  subs:
+    sub1:
+      givenName: Mock
+      defaultName: Mock User
+      claims:
+        groups:
+          - admin
+    sub2:
+      givenName: Admin
+      defaultName: Admin User
+      claims:
+        groups:
+          - auditor
 "
 }
 
@@ -149,6 +175,12 @@ fn issuer_path(raw: &str) -> Result<String> {
 
 #[derive(Debug, Deserialize)]
 struct ServeConfigFile {
+    clients: BTreeMap<String, ClientConfig>,
+    authorization_code: AuthorizationCodeConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthorizationCodeConfig {
     subs: BTreeMap<String, ServeSubConfig>,
 }
 
@@ -162,13 +194,30 @@ struct ServeSubConfig {
     claims: BTreeMap<String, Vec<String>>,
 }
 
-fn load_users_from_file(path: &Path) -> Result<BTreeMap<String, UserProfile>> {
+#[derive(Debug, Deserialize)]
+struct ClientConfig {
+    #[serde(default = "default_client_secret")]
+    client_secret: String,
+    #[serde(rename = "givenName")]
+    given_name: Option<String>,
+    #[serde(rename = "defaultName")]
+    name: Option<String>,
+    #[serde(default)]
+    claims: BTreeMap<String, Vec<String>>,
+}
+
+struct ParsedConfigFile {
+    authorization_code_users: BTreeMap<String, UserProfile>,
+    clients: BTreeMap<String, Client>,
+}
+
+fn load_config_file(path: &Path) -> Result<ParsedConfigFile> {
     let raw = std::fs::read_to_string(path)?;
     let parsed: ServeConfigFile = serde_yaml::from_str(&raw)?;
-    let mut users = BTreeMap::new();
+    let mut authorization_code_users = BTreeMap::new();
 
-    for (sub, entry) in parsed.subs {
-        users.insert(
+    for (sub, entry) in parsed.authorization_code.subs {
+        authorization_code_users.insert(
             sub.clone(),
             UserProfile {
                 sub,
@@ -179,18 +228,56 @@ fn load_users_from_file(path: &Path) -> Result<BTreeMap<String, UserProfile>> {
         );
     }
 
-    Ok(users)
+    let mut clients = BTreeMap::new();
+    for (client_id, entry) in parsed.clients {
+        let explicit_profile =
+            entry.given_name.is_some() || entry.name.is_some() || !entry.claims.is_empty();
+        let given_name = entry.given_name.unwrap_or_else(|| client_id.clone());
+        let name = entry.name.unwrap_or_else(|| client_id.clone());
+        clients.insert(
+            client_id.clone(),
+            Client {
+                client_id: client_id.clone(),
+                client_secret: entry.client_secret,
+                profile: UserProfile {
+                    sub: client_id,
+                    given_name,
+                    name,
+                    additional_claims: entry.claims,
+                },
+                explicit_client_credentials_profile: explicit_profile,
+            },
+        );
+    }
+
+    Ok(ParsedConfigFile {
+        authorization_code_users,
+        clients,
+    })
 }
 
-fn supported_scopes(users: &BTreeMap<String, UserProfile>) -> Vec<String> {
+fn supported_scopes(
+    authorization_code_users: &BTreeMap<String, UserProfile>,
+    clients: &BTreeMap<String, Client>,
+) -> Vec<String> {
     let mut scopes = BTreeSet::from(["openid".to_string(), "profile".to_string()]);
-    for user in users.values() {
+    for user in authorization_code_users.values() {
         for scope in user.additional_claims.keys() {
+            scopes.insert(scope.clone());
+        }
+    }
+    for client in clients.values() {
+        for scope in client.profile.additional_claims.keys() {
             scopes.insert(scope.clone());
         }
     }
     scopes.into_iter().collect()
 }
+
+fn default_client_secret() -> String {
+    CLIENT_SECRET.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,7 +287,9 @@ mod tests {
         let yaml = example_config_yaml();
         assert!(yaml.starts_with("# Example:"));
         assert!(yaml.contains("niloo example-config > config.yaml"));
-        assert!(yaml.contains("subs:"));
-        assert!(yaml.contains("givenName: Mock"));
+        assert!(yaml.contains("clients:"));
+        assert!(yaml.contains("authorization_code:"));
+        assert!(yaml.contains("relying-party:"));
+        assert!(yaml.contains("system-api:"));
     }
 }

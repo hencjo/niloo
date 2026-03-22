@@ -33,19 +33,17 @@ async fn main() -> Result<()> {
 
 async fn run_server(args: cli::ServeArgs) -> Result<()> {
     let config = ResolvedConfig::from_serve_args(args)?;
-    let example_client_id = config
-        .example_client_credentials_client_id()
-        .map(str::to_owned);
+    let example_client = config.example_client_credentials_client().cloned();
     let signing_key = keys::load_or_create(&config.key_file).await?;
     let state = Arc::new(AppState::new(config.clone(), signing_key));
     let app = server::build_router(state);
 
     tracing::info!(listen = %config.listen, issuer = %config.issuer, "starting niloo server");
-    if let Some(client_id) = example_client_id {
+    if let Some(client) = example_client {
         eprintln!("Run this in a terminal to test:");
         eprintln!(
-            "  CLIENT_ID={client_id} CLIENT_SECRET={} niloo client_credentials --issuer-url {}",
-            config.client_secret, config.issuer
+            "  CLIENT_ID={} CLIENT_SECRET={} niloo client_credentials --issuer-url {}",
+            client.client_id, client.client_secret, config.issuer
         );
     }
 

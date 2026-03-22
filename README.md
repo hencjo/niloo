@@ -36,47 +36,58 @@ niloo example-config > config.yaml
 ```
 
 ```bash
-CLIENT_ID=client_id CLIENT_SECRET=client_secret \
-  niloo serve --port 9799 --config-file config.yaml
+niloo serve --port 9799 --config-file config.yaml
 ```
 
 Fetch a local `client_credentials` token from the running server:
 
 ```bash
-CLIENT_ID=sub1 CLIENT_SECRET=client_secret \
+CLIENT_ID=system-api CLIENT_SECRET=client_secret \
   niloo client_credentials --issuer-url http://localhost:9799/Niloo
 ```
 
 ## Config
 
-The server reads a YAML file with a `subs` map. Each entry is both:
+The server reads a YAML file with:
 
-- a selectable browser-flow user
-- a valid `client_id` for the local `client_credentials` flow
+- `clients` for OAuth clients and optional `client_credentials` token claims
+- `authorization_code.subs` for selectable browser-flow users
 
 Example:
 
 ```yaml
-subs:
-  sub1:
-    givenName: Mock
-    defaultName: Mock User
+clients:
+  relying-party:
+    client_secret: client_secret
+  system-api:
+    client_secret: client_secret
+    givenName: System
+    defaultName: System API
     claims:
       groups:
         - admin
-  sub2:
-    givenName: Admin
-    defaultName: Admin User
-    claims:
-      groups:
-        - auditor
+authorization_code:
+  subs:
+    sub1:
+      givenName: Mock
+      defaultName: Mock User
+      claims:
+        groups:
+          - admin
+    sub2:
+      givenName: Admin
+      defaultName: Admin User
+      claims:
+        groups:
+          - auditor
 ```
 
 Notes:
 
 - `givenName` and `defaultName` are emitted in the ID token.
 - Each key under `claims` becomes a claim in issued JWTs.
-- For local `client_credentials`, the Basic auth `client_id` must match one of the configured sub keys.
+- All entries under `clients` are OAuth clients, and any configured client can use either flow.
+- For `client_credentials`, `givenName`, `defaultName`, and `claims` are optional per client. If omitted, Niloo still mints a valid token with `sub=<client_id>`.
 
 ## License
 

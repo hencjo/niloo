@@ -152,13 +152,24 @@ mod tests {
 
     async fn spawn_test_server() -> (tokio::task::JoinHandle<()>, String) {
         let yaml = r#"
-subs:
-  sub1:
+clients:
+  relying-party:
+    client_secret: client_secret
+  local-sub1:
+    client_secret: client_secret
     givenName: Mock
     defaultName: Mock User
     claims:
       groups:
         - admin
+authorization_code:
+  subs:
+    sub1:
+      givenName: Mock
+      defaultName: Mock User
+      claims:
+        groups:
+          - admin
 "#;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -192,7 +203,7 @@ subs:
         let token = with_client_secret(async {
             fetch_client_credentials_token(ClientCredentialsArgs {
                 issuer_url,
-                client_id: "sub1".to_string(),
+                client_id: "local-sub1".to_string(),
                 insecure: false,
             })
             .await

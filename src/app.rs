@@ -30,25 +30,25 @@ impl AppState {
             .or(self.config.selected_sub.as_deref());
 
         match selected_sub {
-            Some(sub) if !self.config.users.is_empty() => self
+            Some(sub) if !self.config.authorization_code_users.is_empty() => self
                 .config
-                .users
+                .authorization_code_users
                 .get(sub)
                 .cloned()
                 .map(Some)
                 .ok_or_else(|| AppError::bad_request(format!("unknown configured sub: {sub}"))),
             Some(sub) => {
-                let mut user = self.config.default_user.clone();
+                let mut user = self.config.default_authorization_code_user.clone();
                 user.sub = sub.to_string();
                 Ok(Some(user))
             }
-            None if !self.config.users.is_empty() => Ok(None),
-            None => Ok(Some(self.config.default_user.clone())),
+            None if !self.config.authorization_code_users.is_empty() => Ok(None),
+            None => Ok(Some(self.config.default_authorization_code_user.clone())),
         }
     }
 
     pub fn available_users(&self) -> impl Iterator<Item = &UserProfile> {
-        self.config.users.values()
+        self.config.authorization_code_users.values()
     }
 
     pub fn authorization_path(&self) -> String {

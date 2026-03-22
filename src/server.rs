@@ -62,7 +62,7 @@ async fn authorize(State(state): State<Arc<AppState>>, raw_query: RawQuery) -> R
     if query.response_type != "code" {
         return Err(AppError::bad_request("response_type must be code"));
     }
-    if query.client_id != state.config.client_id {
+    if !state.config.clients.contains_key(&query.client_id) {
         return Err(AppError::unauthorized("unexpected client_id"));
     }
     if query.state.is_empty() || query.redirect_uri.is_empty() || query.nonce.is_empty() {
@@ -132,7 +132,13 @@ async fn authorization_code_token(state: Arc<AppState>, form: TokenForm) -> Resu
     let redirect_uri = required_form_field("redirect_uri", form.redirect_uri)?;
     let code = required_form_field("code", form.code)?;
 
-    if client_id != state.config.client_id || client_secret != state.config.client_secret {
+    let client = state
+        .config
+        .clients
+        .get(&client_id)
+        .ok_or_else(|| AppError::unauthorized("invalid client credentials"))?;
+
+    if client_secret != client.client_secret {
         return Err(AppError::unauthorized("invalid client credentials"));
     }
 
@@ -145,6 +151,7 @@ async fn authorization_code_token(state: Arc<AppState>, form: TokenForm) -> Resu
         &state.signing_key,
         &state.config,
         &code.user,
+        &client_id,
         Some(&code.nonce),
     )?;
 
@@ -175,19 +182,28 @@ async fn client_credentials_token(
         ));
     }
 
-    let user = state.config.users.get(&client_id).cloned().ok_or_else(|| {
-        log_client_credentials_failure(
-            &state,
-            StatusCode::UNAUTHORIZED,
-            "unknown client_id",
-            Some(&client_id),
-            Some(&expected_client_credentials_hint(&state)),
-        );
-        AppError::unauthorized("unknown client_id")
-    })?;
+    let machine_client = state
+        .config
+        .clients
+        .get(&client_id)
+        .cloned()
+        .ok_or_else(|| {
+            log_client_credentials_failure(
+                &state,
+                StatusCode::UNAUTHORIZED,
+                "unknown client_id",
+                Some(&client_id),
+                Some(&expected_client_credentials_hint(&state)),
+            );
+            AppError::unauthorized("unknown client_id")
+        })?;
 
-    let bundle =
-        jwt::mint_system_access_token(&state.signing_key, &state.config, &user, &client_id)?;
+    let bundle = jwt::mint_system_access_token(
+        &state.signing_key,
+        &state.config,
+        &machine_client.profile,
+        &client_id,
+    )?;
 
     Ok(Json(jwt::into_access_token_response(bundle)).into_response())
 }
@@ -262,13 +278,23 @@ fn validate_basic_authorization(headers: &HeaderMap, state: &AppState) -> Result
         AppError::unauthorized("invalid Authorization header")
     })?;
 
-    if client_secret != state.config.client_secret {
+    let expected_secret = state
+        .config
+        .clients
+        .get(client_id)
+        .map(|client| client.client_secret.as_str());
+
+    let Some(expected_secret) = expected_secret else {
+        return Ok(client_id.to_string());
+    };
+
+    if client_secret != expected_secret {
         log_client_credentials_failure(
             state,
             StatusCode::UNAUTHORIZED,
             "invalid client_secret",
             Some(client_id),
-            Some(&expected_client_credentials_hint(state)),
+            Some(&expected_client_secret_hint(client_id, expected_secret)),
         );
         return Err(AppError::unauthorized("invalid Authorization header"));
     }
@@ -306,22 +332,23 @@ fn log_client_credentials_failure(
 }
 
 fn expected_client_credentials_hint(state: &AppState) -> String {
-    let client_ids = if state.config.users.is_empty() {
-        state.config.client_id.clone()
+    let client_ids = if state.config.clients.is_empty() {
+        "none".to_string()
     } else {
         state
             .config
-            .users
+            .clients
             .keys()
             .cloned()
             .collect::<Vec<_>>()
             .join(", ")
     };
 
-    format!(
-        "expected_client_id=[{client_ids}] expected_client_secret={}",
-        state.config.client_secret
-    )
+    format!("expected_client_id=[{client_ids}]")
+}
+
+fn expected_client_secret_hint(client_id: &str, client_secret: &str) -> String {
+    format!("expected_client_id={client_id} expected_client_secret={client_secret}")
 }
 
 fn render_user_selection_page(state: &AppState, raw_query: &str) -> String {
@@ -382,19 +409,30 @@ mod tests {
 
     async fn test_app(selected_sub: Option<&str>) -> axum::Router {
         let yaml = r#"
-subs:
-  sub1:
-    givenName: Mock
-    defaultName: Mock User
-    claims:
-      groups:
-        - admin
-  sub2:
+clients:
+  relying-party:
+    client_secret: client_secret
+  local-sub2:
+    client_secret: client_secret
     givenName: Admin
     defaultName: Admin User
     claims:
       groups:
         - auditor
+authorization_code:
+  subs:
+    sub1:
+      givenName: Mock
+      defaultName: Mock User
+      claims:
+        groups:
+          - admin
+    sub2:
+      givenName: Admin
+      defaultName: Admin User
+      claims:
+        groups:
+          - auditor
 "#;
         let temp = std::env::temp_dir().join(format!("niloo-test-{}.pem", uuid::Uuid::new_v4()));
         let config_file =
@@ -451,7 +489,7 @@ subs:
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/Niloo/oauth2/authorize?response_type=code&client_id=client_id&redirect_uri=http://localhost:8080/oauth&nonce=test-nonce&state=test-state")
+                    .uri("/Niloo/oauth2/authorize?response_type=code&client_id=relying-party&redirect_uri=http://localhost:8080/oauth&nonce=test-nonce&state=test-state")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -477,7 +515,7 @@ subs:
                     .method(Method::POST)
                     .uri("/Niloo/oauth2/token")
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .header("authorization", basic_authorization("sub2"))
+                    .header("authorization", basic_authorization("local-sub2"))
                     .body(Body::from("grant_type=client_credentials"))
                     .unwrap(),
             )
@@ -515,11 +553,11 @@ subs:
         .unwrap();
 
         let mut validation = Validation::new(Algorithm::RS256);
-        validation.set_audience(&["sub2"]);
+        validation.set_audience(&["local-sub2"]);
         validation.set_issuer(&["http://localhost:9393/Niloo"]);
 
         let claims = decode::<serde_json::Value>(access_token, &decoding_key, &validation).unwrap();
-        assert_eq!(claims.claims["sub"], "sub2");
+        assert_eq!(claims.claims["sub"], "local-sub2");
         assert_eq!(claims.claims["groups"][0], "auditor");
         assert!(claims.claims.get("nonce").is_none());
     }
@@ -568,7 +606,7 @@ subs:
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/Niloo/oauth2/authorize?response_type=code&client_id=client_id&redirect_uri=http://localhost:8080/oauth&nonce=test-nonce&state=test-state&scope=custom_scope&scope=profile&claims=%7B%22id_token%22%3A%7B%22ignored%22%3Anull%7D%7D")
+                    .uri("/Niloo/oauth2/authorize?response_type=code&client_id=relying-party&redirect_uri=http://localhost:8080/oauth&nonce=test-nonce&state=test-state&scope=custom_scope&scope=profile&claims=%7B%22id_token%22%3A%7B%22ignored%22%3Anull%7D%7D")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -597,7 +635,7 @@ subs:
                     .uri("/Niloo/oauth2/token")
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from(format!(
-                        "grant_type=authorization_code&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Foauth&client_id=client_id&client_secret=client_secret&code={code}"
+                        "grant_type=authorization_code&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Foauth&client_id=relying-party&client_secret=client_secret&code={code}"
                     )))
                     .unwrap(),
             )
@@ -632,7 +670,7 @@ subs:
         .unwrap();
 
         let mut validation = Validation::new(Algorithm::RS256);
-        validation.set_audience(&["client_id"]);
+        validation.set_audience(&["relying-party"]);
         validation.set_issuer(&["http://localhost:9393/Niloo"]);
 
         let claims = decode::<serde_json::Value>(id_token, &decoding_key, &validation).unwrap();
